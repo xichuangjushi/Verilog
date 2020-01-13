@@ -1,0 +1,186 @@
+//采用状态机检测判断按键状态
+//在带自锁的基础上增加对上升沿的检测，判断按键松开
+//仅当判定按键松开（key_loose=1）时才进行下降沿检测，当判定按键按下（key_pressed）才进行上升沿检测
+//根据以下源码改进：https://blog.csdn.net/zhoutaopower/article/details/103180042
+
+module keyscan(
+    input clk,
+    input cr,
+    input key_in,
+    output reg key_out
+);
+
+//上升沿/下降沿检测模块
+reg key_in_0;           //按键抽样现态
+reg key_in_1;           //按键上次抽样状态
+always @(posedge clk or negedge cr)
+begin
+    if(~cr) begin
+        key_in_0<=1'b1;
+        key_in_1<=1'b1;
+    end
+    else begin
+        key_in_0<=key_in;
+        key_in_1<=key_in_0;
+    end
+end
+
+//下降沿和上升沿的检测方案，记下
+wire key_posedge;
+wire key_negedge;
+assign key_posedge=key_in_0 & (~key_in_1);      //上次检测为0，现态为1时key_posedge置1
+assign key_negedge=key_in_1 & (~key_in_0);
+
+//状态机
+reg[2:0]state;           //三个状态
+parameter IDLE = 3'b001;           
+parameter SAMPLING = 3'b010;
+parameter CONFIRM = 3'b100;
+reg en_cnt;                 //计数使能
+reg key_loose;              //按键松开
+reg key_pressed;            //按键按下
+
+always @(posedge clk or negedge cr)
+begin
+    if(~cr) begin
+        state<=IDLE;
+        en_cnt<=1'b0;
+        key_loose<=1'b1;
+        key_pressed<=1'b0;
+    end
+    else begin
+        if(key_loose) begin          //按键松开，检测下降沿
+            case(state)
+                IDLE:begin
+                    if(key_negedge) begin
+                        state<=SAMPLING;
+                        en_cnt<=1'b1;
+                        key_pressed<=1'b0;
+                        key_loose<=1'b1;
+                    end
+                    else begin
+                        state<=IDLE;
+                        en_cnt<=1'b0;
+                        key_pressed<=1'b0;
+                        key_loose<=1'b1;
+                    end
+                end
+                SAMPLING:begin
+                    if(key_posedge) begin
+                        state <=IDLE;
+                        en_cnt<=1'b0;
+                        key_pressed<=1'b0;
+                        key_loose<=1'b1;
+                    end
+                    else begin 
+                        if(cnt_full) begin
+                            state<=CONFIRM;
+                            en_cnt<=1'b0;
+                            key_pressed<=1'b0;
+                            key_loose<=1'b1;
+                        end
+                        else begin
+                            state<=SAMPLING;
+                            en_cnt<=1'b1;
+                            key_pressed<=1'b0;
+                            key_loose<=1'b1;
+                        end
+                    end
+                end
+                CONFIRM:begin
+                    state<=IDLE;
+                    en_cnt<=1'b0;
+                    key_pressed<=1'b1;
+                    key_loose<=1'b0;
+                end
+                default:begin
+                    state<=IDLE;
+                    en_cnt<=1'b0;
+                    key_pressed<=1'b0;
+                    key_loose<=1'b1;
+                end
+            endcase
+        end
+        else if(key_pressed) begin        //按键按下，检测上升沿
+            case(state)
+                IDLE:begin
+                    if(key_posedge) begin
+                        state<=SAMPLING;
+                        en_cnt<=1'b1;
+                        key_pressed<=1'b1;
+                        key_loose<=1'b0;
+                    end
+                    else begin
+                        state<=IDLE;
+                        en_cnt<=1'b0;
+                        key_pressed<=1'b1;
+                        key_loose<=1'b0;
+                    end
+                end
+                SAMPLING:begin  
+                    if(key_negedge) begin
+                        state <=IDLE;
+                        en_cnt<=1'b0;
+                        key_pressed<=1'b1;
+                        key_loose<=1'b0;
+                    end
+                    else begin
+                        if(cnt_full) begin
+                            state<=CONFIRM;
+                            en_cnt<=1'b0;
+                            key_pressed<=1'b1;
+                            key_loose<=1'b0;
+                        end
+                        else begin
+                            state<=SAMPLING;
+                            en_cnt<=1'b1;
+                            key_pressed<=1'b1;
+                            key_loose<=1'b0;
+                        end
+                    end
+                end
+                CONFIRM:begin
+                    state<=IDLE;
+                    en_cnt<=1'b0;
+                    key_pressed<=1'b0;
+                    key_loose<=1'b1;
+                end
+                default:begin
+                    state<=IDLE;
+                    en_cnt<=1'b0;
+                    key_pressed<=1'b1;
+                    key_loose<=1'b0;
+                end
+            endcase
+        end
+	end
+end
+
+//Counter
+reg [19:0]cnt;
+always @(posedge clk or negedge cr)
+begin
+    if(~cr) cnt<=20'h00000;
+    else if(en_cnt) cnt<=cnt+1;
+    else cnt<=20'h00000;
+end
+
+//Counter_full logic
+parameter _20ms=100_0000;    //50M晶振T=20ns，计数1000000次即为20ms
+reg cnt_full;
+always @(posedge clk or negedge cr)
+begin
+    if(~cr) cnt_full<=1'b0;
+    else if(cnt==_20ms) cnt_full<=1'b1;
+    else cnt_full<=1'b0;
+end
+
+//保持按键输出状态
+always @(posedge clk or negedge cr)
+begin
+    if(~cr) key_out<=1'b0;
+    else if(key_pressed) key_out<=1'b1;
+    else if(key_loose) key_out<=1'b0;
+end
+
+endmodule
